@@ -1,0 +1,10 @@
+results/
+
+# Julia
+Manifest.toml
+/docs/build/
+*.jl.cov
+*.jl.mem
+
+# OS
+.DS_Store

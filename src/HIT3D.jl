@@ -22,7 +22,7 @@ include("grid.jl")
 include("fields.jl")
 include("rhs/rhs.jl")
 include("integrators/integrators.jl")
-include("diagnostics.jl")
+include("diagnostics/diagnostics.jl")
 
 using .Schema
 using .Grids
@@ -42,8 +42,11 @@ export injection
 export AbstractScheme, RK4, evolve!, Callback, Diagnostic, FieldWriter
 export save_series
 export energy, enstrophy, dissipation, energy_spectrum, energy_budget
+export component_spectra, compensated_spectrum, dissipation_constant
 export kolmogorov_scale, taylor_microscale, taylor_reynolds
-export label, plot_summary, plot_slices, plot_energy_balance
+export velocity_samples, velocity_moments
+export longitudinal_autocorrelation, integral_lengthscale
+export label, plot_summary, plot_slices, plot_energy_balance, plot_validation
 export load_run, read_series
 
 end # module

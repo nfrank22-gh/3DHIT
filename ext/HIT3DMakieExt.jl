@@ -37,7 +37,8 @@ const CAT_AMBER = Makie.Colors.colorant"#d97706"
 # implemented in HIT3D's core `report.jl` — Makie-free and covered by the
 # ordinary test suite — and just consumed here.
 
-function HIT3D.plot_summary(path::AbstractString; outdir = dirname(path))
+function HIT3D.plot_summary(path::AbstractString; outdir = dirname(path),
+                             spectra_xlims = nothing, spectra_ylims = nothing)
     isempty(outdir) && (outdir = ".")
     mkpath(outdir)
     written = String[]
@@ -119,9 +120,15 @@ function HIT3D.plot_summary(path::AbstractString; outdir = dirname(path))
         Colorbar(fig2[1, 2]; colormap = TIME_RAMP, colorrange = (t0, t1),
                  label = "t")
         # keep the view on the developed spectra (the initial condition's
-        # steep tail would otherwise stretch the axis over ~40 decades)
-        Emax = maximum(maximum, spectra)
-        ylims!(ax, Emax * 1e-12, Emax * 5)
+        # steep tail would otherwise stretch the axis over ~40 decades),
+        # unless the caller pinned the range (e.g. to match a paper figure)
+        if spectra_ylims === nothing
+            Emax = maximum(maximum, spectra)
+            ylims!(ax, Emax * 1e-12, Emax * 5)
+        else
+            ylims!(ax, spectra_ylims...)
+        end
+        spectra_xlims === nothing || xlims!(ax, spectra_xlims...)
         # k^(-5/3) reference, anchored above the last (most developed)
         # snapshot's spectrum
         nk = length(ks)
@@ -213,6 +220,102 @@ function HIT3D.plot_energy_balance(path::AbstractString;
     p = joinpath(outdir, "energy_balance.png")
     save(p, fig)
     return [p]
+end
+
+# --- validation against a reference (e.g. a paper figure) ------------------
+
+function HIT3D.plot_validation(path::AbstractString; outdir = dirname(path),
+                               window = 1 // 3)
+    isempty(outdir) && (outdir = ".")
+    mkpath(outdir)
+    written = String[]
+
+    jldopen(path, "r") do file
+        keys_ = _stepkeys(file)
+        isempty(keys_) && error("no snapshots found in $path")
+        g, ν = _read_grid(file, _state_T(file))
+        ν === nothing &&
+            error("plot_validation needs viscosity metadata (none found in $path)")
+
+        ts = Float64[file[k * "/t"] for k in keys_]
+        t0, t1 = first(ts), last(ts)
+        cutoff = t1 - window * (t1 - t0)
+        stat_keys = [k for (k, t) in zip(keys_, ts) if t >= cutoff]
+
+        # accumulate stationary-window averages: shell spectra, component
+        # spectra, dissipation, and pooled physical-space samples
+        ks = Float64[]
+        Es = Float64[]
+        E11 = Float64[]; E22 = Float64[]; E33 = Float64[]
+        ε = 0.0
+        samples = Float64[]
+        for (i, k) in enumerate(stat_keys)
+            û = file[k * "/û"]
+            kk, Ek = energy_spectrum(û, g)
+            _, e11, e22, e33 = component_spectra(û, g)
+            if i == 1
+                ks, Es, E11, E22, E33 = Float64.(kk), Float64.(Ek),
+                                        Float64.(e11), Float64.(e22), Float64.(e33)
+            else
+                Es .+= Ek; E11 .+= e11; E22 .+= e22; E33 .+= e33
+            end
+            ε += dissipation(û, g, ν)
+            append!(samples, velocity_samples(û, g))
+        end
+        n = length(stat_keys)
+        Es ./= n; E11 ./= n; E22 ./= n; E33 ./= n
+        ε /= n
+
+        # compensated_spectrum.png — Kolmogorov normalization, stationary avg
+        kη, Ecomp = compensated_spectrum(ks, Es, ε, ν)
+        keep = Ecomp .> 0
+        fig1 = Figure(size = (640, 460))
+        ax1 = Axis(fig1[1, 1]; xscale = log10, yscale = log10,
+                  xlabel = "k·η", ylabel = "E(k)·ε^(-2/3)·k^(5/3)",
+                  title = "Compensated spectrum (stationary window)")
+        scatterlines!(ax1, kη[keep], Ecomp[keep]; color = LINE_BLUE,
+                     linewidth = 2, markersize = 6)
+        hlines!(ax1, [1.5]; color = GUIDE_GRAY, linestyle = :dash)
+        text!(ax1, kη[keep][end], 1.5; text = "C_K ≈ 1.5", color = GUIDE_GRAY,
+             align = (:right, :bottom))
+        p1 = joinpath(outdir, "compensated_spectrum.png")
+        save(p1, fig1)
+        push!(written, p1)
+
+        # isotropy_spectra.png — component spectra, should coincide
+        fig2 = Figure(size = (640, 460))
+        ax2 = Axis(fig2[1, 1]; xscale = log10, yscale = log10,
+                  xlabel = "k", ylabel = "Eᵢᵢ(k)",
+                  title = "Component spectra (isotropy check)")
+        for (Ei, lbl, color) in ((E11, "E₁₁", CAT_RED), (E22, "E₂₂", CAT_GREEN),
+                                 (E33, "E₃₃", CAT_VIOLET))
+            k2 = Ei .> 0
+            lines!(ax2, ks[k2], Ei[k2]; color, label = lbl, linewidth = 2)
+        end
+        axislegend(ax2; position = :lb, framevisible = false)
+        p2 = joinpath(outdir, "isotropy_spectra.png")
+        save(p2, fig2)
+        push!(written, p2)
+
+        # velocity_pdf.png — standardized PDF vs unit Gaussian
+        mom = velocity_moments(samples)
+        z = (samples .- mom.mean) ./ sqrt(mom.variance)
+        fig3 = Figure(size = (640, 460))
+        ax3 = Axis(fig3[1, 1]; xlabel = "(u₁ − ⟨u₁⟩)/u₁′", ylabel = "PDF",
+                  yscale = log10,
+                  title = "Velocity PDF  (skewness = $(_fmt(mom.skewness)), " *
+                          "flatness = $(_fmt(mom.flatness)))")
+        hist!(ax3, z; normalization = :pdf, bins = 60,
+             color = (LINE_BLUE, 0.5), strokewidth = 0, label = "measured")
+        xs = range(-6, 6; length = 200)
+        lines!(ax3, xs, @.(exp(-xs^2 / 2) / sqrt(2π)); color = GUIDE_GRAY,
+              linestyle = :dash, linewidth = 2, label = "Gaussian")
+        axislegend(ax3; position = :rt, framevisible = false)
+        p3 = joinpath(outdir, "velocity_pdf.png")
+        save(p3, fig3)
+        push!(written, p3)
+    end
+    return written
 end
 
 # --- velocity slices -------------------------------------------------------

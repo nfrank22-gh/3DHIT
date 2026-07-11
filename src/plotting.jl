@@ -7,7 +7,8 @@
 # `FieldWriter`.
 
 """
-    plot_summary(path; outdir = dirname(path)) -> Vector{String}
+    plot_summary(path; outdir = dirname(path),
+                 spectra_xlims = nothing, spectra_ylims = nothing) -> Vector{String}
 
 Read a `FieldWriter` snapshot file and write two figures to `outdir`:
 
@@ -16,7 +17,10 @@ Read a `FieldWriter` snapshot file and write two figures to `outdir`:
   When the file also carries a dense `series/energy_budget` group (see
   `save_series`), the time panels use it instead of the sparse snapshots;
 - `spectra.png` — log-log energy spectra of every snapshot, colored by time,
-  with a k^(-5/3) reference slope.
+  with a k^(-5/3) reference slope. Axis limits auto-scale to the data by
+  default; pass `spectra_xlims`/`spectra_ylims = (lo, hi)` to fix them
+  instead — e.g. to match a reference plot from a paper for a side-by-side
+  comparison.
 
 Returns the paths of the files written. Requires a Makie backend:
 `using CairoMakie` (headless/PNG) or `using GLMakie`.
@@ -57,6 +61,26 @@ the files written. Requires a Makie backend, like [`plot_summary`](@ref).
 """
 function plot_energy_balance end
 
+"""
+    plot_validation(path; outdir = dirname(path), window = 1//3) -> Vector{String}
+
+Write three figures to `outdir`, each averaged over snapshots whose time `t`
+falls in the last `window` fraction of the run (a statistically-stationary
+window for a forced run; for a decaying run this is just its final segment):
+
+- `compensated_spectrum.png` — `E(k)·ε^(-2/3)·k^(5/3)` vs `k·η`, with a
+  horizontal reference at the Kolmogorov constant C_K ≈ 1.5;
+- `isotropy_spectra.png` — the three component spectra E₁₁, E₂₂, E₃₃; they
+  should coincide throughout the resolved range for isotropic turbulence;
+- `velocity_pdf.png` — standardized PDF of one velocity component against a
+  unit Gaussian, with skewness/flatness in the title.
+
+Errors if the file has no viscosity metadata (needed for the compensated
+spectrum). Returns the paths of the files written. Requires a Makie backend,
+like [`plot_summary`](@ref).
+"""
+function plot_validation end
+
 const _NEEDS_MAKIE = """
 requires a Makie backend to be loaded first, e.g.:
     using CairoMakie   # headless, writes PNGs
@@ -67,3 +91,4 @@ plot_summary(args...; kwargs...) = error("plot_summary ", _NEEDS_MAKIE)
 plot_slices(args...; kwargs...) = error("plot_slices ", _NEEDS_MAKIE)
 plot_energy_balance(args...; kwargs...) =
     error("plot_energy_balance ", _NEEDS_MAKIE)
+plot_validation(args...; kwargs...) = error("plot_validation ", _NEEDS_MAKIE)

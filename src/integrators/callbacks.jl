@@ -68,7 +68,8 @@ function Diagnostic(f; every = 1, timetype = Float64, valuetype = Float64,
 end
 
 """
-    FieldWriter(path; every, fields = (:û,), overwrite = true)
+    FieldWriter(path; every = 1, fields = (:û,), overwrite = true,
+                every_time = nothing, warmup_time = nothing)
 
 Full-field snapshot writer: copies the requested state fields to the CPU and
 appends them (plus the time) to a JLD2 file under `"step_<n>/<field>"`.
@@ -83,18 +84,30 @@ With `overwrite = true` (default) an existing file at `path` is deleted at
 construction time — rerunning a driver replaces its snapshots instead of
 erroring on duplicate group names mid-run. Pass `overwrite = false` to
 append across multiple `evolve!` calls (steps must not repeat).
+
+By default snapshots are scheduled by step count (`every`), like any other
+callback. Pass `every_time` to schedule by simulation time instead: the
+first snapshot lands at `t = warmup_time` (default `0`) and recurs every
+`every_time` thereafter — no snapshots are taken before `warmup_time`. This
+suits dataset-generation drivers that want to discard an initial transient
+and then sample at a fixed physical-time cadence regardless of `dt`.
 """
-struct FieldWriter{T}
+struct FieldWriter{T, ET}
     path::String
     every::Int
     fields::T
+    every_time::ET
+    warmup_time::ET
 end
 
-function FieldWriter(path; every, fields = (:û,), overwrite = true)
+function FieldWriter(path; every = 1, fields = (:û,), overwrite = true,
+                     every_time = nothing, warmup_time = nothing)
+    every_time !== nothing && warmup_time === nothing &&
+        (warmup_time = zero(every_time))
     dir = dirname(path)
     isempty(dir) || mkpath(dir)
     overwrite && rm(path; force = true)
-    return FieldWriter(path, every, fields)
+    return FieldWriter(path, every, fields, every_time, warmup_time)
 end
 
 """
@@ -143,7 +156,13 @@ function is_due(cb::Callback, step, t, dt)
            floor(t / cb.every_time) > floor((t - dt) / cb.every_time)
 end
 is_due(cb::Diagnostic, step, t, dt) = step % cb.every == 0
-is_due(cb::FieldWriter, step, t, dt) = step % cb.every == 0
+
+function is_due(cb::FieldWriter, step, t, dt)
+    cb.every_time === nothing && return step % cb.every == 0
+    t < cb.warmup_time && return false
+    return floor((t - cb.warmup_time) / cb.every_time) >
+           floor((t - dt - cb.warmup_time) / cb.every_time)
+end
 
 """Fire `cb` on `state`, performing any accumulation/IO inside
 `@ignore_derivatives`."""

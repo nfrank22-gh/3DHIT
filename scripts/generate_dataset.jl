@@ -33,15 +33,20 @@
 #   save_dt = 2.5              # snapshot cadence after warmup
 #
 # Run from the repo root with the scripts environment:
-#   julia --project=scripts scripts/generate_dataset.jl configs/my_dataset.toml
+#   julia --project=scripts scripts/generate_dataset.jl
+#
+# Always reads configs/dataset.toml — no CLI args. To generate a different
+# dataset, edit that file (or swap in a different one under that name)
+# before rerunning.
 
 using HIT3D
 using TOML
 using Random: MersenneTwister
 
-length(ARGS) == 1 ||
-    error("usage: julia --project=scripts scripts/generate_dataset.jl <config.toml>")
-config_path = ARGS[1]
+config_path = joinpath(@__DIR__, "..", "configs", "dataset.toml")
+isfile(config_path) ||
+    error("missing $config_path — create it (see the schema documented " *
+          "at the top of this file)")
 cfg = TOML.parsefile(config_path)
 
 output_path_file = joinpath(@__DIR__, "..", "configs", "output_path.txt")

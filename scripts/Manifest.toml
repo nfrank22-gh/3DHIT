@@ -2,7 +2,7 @@
 
 julia_version = "1.10.10"
 manifest_format = "2.0"
-project_hash = "671f239ed21de4eb508f0d22ae8416f82d408a4b"
+project_hash = "66f8c50a5697c88471ad08ed10989206f5a24e65"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -622,7 +622,7 @@ uuid = "3955a311-db13-416c-9275-1d80ed98e5e9"
 version = "0.11.2"
 
 [[deps.HIT3D]]
-deps = ["AbstractFFTs", "Adapt", "CairoMakie", "ChainRulesCore", "FFTW", "JLD2", "LinearAlgebra", "Printf", "Random"]
+deps = ["AbstractFFTs", "Adapt", "CairoMakie", "ChainRulesCore", "FFTW", "JLD2", "LinearAlgebra", "Metal", "Printf", "Random", "Statistics"]
 path = ".."
 uuid = "b7e0a2f4-3c1d-4e5a-9f8b-2a6c7d8e9f01"
 version = "0.1.0"

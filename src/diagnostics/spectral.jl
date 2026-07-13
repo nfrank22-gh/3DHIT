@@ -50,7 +50,7 @@ function energy_spectrum(û, g::Grid)
         Es[s] = volume_integral(abs2, broadcasted(*, w, shell), û, g) / 2
     end
     return ks, Es
-endve
+end
 
 """
     component_spectra(û, g::Grid) -> (k, E11, E22, E33)

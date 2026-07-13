@@ -1,7 +1,7 @@
 name = "HIT3D"
 uuid = "b7e0a2f4-3c1d-4e5a-9f8b-2a6c7d8e9f01"
 authors = ["Noah Frank <noahfrank2022@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 
 [deps]
 AbstractFFTs = "621f4979-c628-5d54-868e-fcf4e3e8185c"

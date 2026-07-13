@@ -39,7 +39,7 @@ export Grid
 export AbstractRHS, NavierStokes, AbstractForcing, NoForcing, BandForcing,
        LinearForcing
 export injection
-export AbstractScheme, RK4, evolve!, Callback, Diagnostic, FieldWriter
+export AbstractScheme, RK4, step!, evolve!, Callback, Diagnostic, FieldWriter
 export save_series
 export energy, enstrophy, dissipation, energy_spectrum, energy_budget
 export component_spectra, compensated_spectrum, dissipation_constant

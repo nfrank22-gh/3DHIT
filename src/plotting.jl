@@ -62,7 +62,8 @@ the files written. Requires a Makie backend, like [`plot_summary`](@ref).
 function plot_energy_balance end
 
 """
-    plot_validation(path; outdir = dirname(path), window = 1//3) -> Vector{String}
+    plot_validation(path; outdir = dirname(path), window = 1//3,
+                    spectra_xlims = nothing, spectra_ylims = nothing) -> Vector{String}
 
 Write three figures to `outdir`, each averaged over snapshots whose time `t`
 falls in the last `window` fraction of the run (a statistically-stationary
@@ -71,7 +72,10 @@ window for a forced run; for a decaying run this is just its final segment):
 - `compensated_spectrum.png` — `E(k)·ε^(-2/3)·k^(5/3)` vs `k·η`, with a
   horizontal reference at the Kolmogorov constant C_K ≈ 1.5;
 - `isotropy_spectra.png` — the three component spectra E₁₁, E₂₂, E₃₃; they
-  should coincide throughout the resolved range for isotropic turbulence;
+  should coincide throughout the resolved range for isotropic turbulence.
+  Axis limits auto-scale to the data by default; pass
+  `spectra_xlims`/`spectra_ylims = (lo, hi)` to fix them instead — e.g. to
+  match a reference plot from a paper for a side-by-side comparison;
 - `velocity_pdf.png` — standardized PDF of one velocity component against a
   unit Gaussian, with skewness/flatness in the title.
 

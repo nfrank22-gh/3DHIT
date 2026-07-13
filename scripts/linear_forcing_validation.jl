@@ -33,6 +33,11 @@ save_dt = 2.5f0          # documentation only
 
 As = [0.0667f0, 0.1333f0, 0.2f0]   # paper's cases 1, 2, 3 (same ν, k0 = 2)
 
+# Axis limits for every E(k)-vs-k plot in this script, matched to the paper's
+# Fig. 2 (Rosales & Meneveau 2005) so runs overlay directly on it.
+SPECTRUM_XLIMS = (1e0, 1e2)
+SPECTRUM_YLIMS = (1e-8, 1e-1)
+
 output_path_file = joinpath(@__DIR__, "..", "configs", "output_path.txt")
 isfile(output_path_file) ||
     error("missing $output_path_file — create it with one line: the base " *
@@ -81,10 +86,10 @@ for A in As
 
     println("== A = ", A, "  (", rundir, ") ==")
 
-    plot_summary(snapfile)
+    plot_summary(snapfile; spectra_xlims = SPECTRUM_XLIMS, spectra_ylims = SPECTRUM_YLIMS)
     plot_slices(snapfile)
     plot_energy_balance(snapfile)
-    plot_validation(snapfile)
+    plot_validation(snapfile; spectra_xlims = SPECTRUM_XLIMS, spectra_ylims = SPECTRUM_YLIMS)
 
     series = read_series(snapfile, "energy_budget")
     series === nothing &&
@@ -142,6 +147,8 @@ for (i, (A, ks, Es)) in enumerate(comparison_spectra)
           linewidth = 2, label = "A = $A")
 end
 axislegend(ax; position = :lb, framevisible = false)
+xlims!(ax, SPECTRUM_XLIMS...)
+ylims!(ax, SPECTRUM_YLIMS...)
 comparison_path = joinpath(base_dir, "spectra_comparison.png")
 save(comparison_path, fig)
 println("comparison spectrum written to ", abspath(comparison_path))

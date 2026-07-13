@@ -157,11 +157,25 @@ function is_due(cb::Callback, step, t, dt)
 end
 is_due(cb::Diagnostic, step, t, dt) = step % cb.every == 0
 
+"""Cadence index of `x`, snapping to the nearest integer whenever it's
+within `tol` of one. Guards against Float32 noise: `t` at step `n` is
+`t0 + n*dt` (accumulated by `evolve!`), but the previous instant is
+reconstructed here as `t - dt` — the two don't always agree to the last
+bit, which without snapping can make a boundary crossing detected twice in
+a row (once comparing the true `t`, once comparing the reconstructed one)."""
+function _cadence_index(x, tol)
+    r = round(x)
+    return abs(x - r) < tol ? r : x
+end
+
 function is_due(cb::FieldWriter, step, t, dt)
     cb.every_time === nothing && return step % cb.every == 0
     t < cb.warmup_time && return false
-    return floor((t - cb.warmup_time) / cb.every_time) >
-           floor((t - dt - cb.warmup_time) / cb.every_time)
+    tol = (dt / cb.every_time) / 4
+    n_now  = floor(_cadence_index((t - cb.warmup_time) / cb.every_time, tol))
+    n_prev = floor(_cadence_index((t - dt - cb.warmup_time) / cb.every_time,
+                                  tol))
+    return n_now > n_prev
 end
 
 """Fire `cb` on `state`, performing any accumulation/IO inside

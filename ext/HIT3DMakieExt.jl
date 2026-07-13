@@ -225,7 +225,8 @@ end
 # --- validation against a reference (e.g. a paper figure) ------------------
 
 function HIT3D.plot_validation(path::AbstractString; outdir = dirname(path),
-                               window = 1 // 3)
+                               window = 1 // 3,
+                               spectra_xlims = nothing, spectra_ylims = nothing)
     isempty(outdir) && (outdir = ".")
     mkpath(outdir)
     written = String[]
@@ -292,6 +293,8 @@ function HIT3D.plot_validation(path::AbstractString; outdir = dirname(path),
             k2 = Ei .> 0
             lines!(ax2, ks[k2], Ei[k2]; color, label = lbl, linewidth = 2)
         end
+        spectra_xlims === nothing || xlims!(ax2, spectra_xlims...)
+        spectra_ylims === nothing || ylims!(ax2, spectra_ylims...)
         axislegend(ax2; position = :lb, framevisible = false)
         p2 = joinpath(outdir, "isotropy_spectra.png")
         save(p2, fig2)

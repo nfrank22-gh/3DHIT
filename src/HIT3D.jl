@@ -33,6 +33,7 @@ using .Diagnostics
 include("labels.jl")
 include("report.jl")
 include("plotting.jl")
+include("adjoint.jl")
 
 # Re-export the main user-facing names
 export Grid
@@ -47,6 +48,7 @@ export kolmogorov_scale, taylor_microscale, taylor_reynolds
 export velocity_samples, velocity_moments
 export longitudinal_autocorrelation, integral_lengthscale
 export label, plot_summary, plot_slices, plot_energy_balance, plot_validation
+export VJPWorkspace, vjp_step!
 export load_run, read_series
 
 end # module

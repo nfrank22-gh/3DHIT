@@ -3,6 +3,8 @@ using HIT3D.Grids: ∂x!, ∂y!, ∂z!, laplacian!, project!, dealias!
 using HIT3D.RHS: rhs!
 using JLD2: jldopen
 using Test
+using Enzyme
+using LinearAlgebra: dot, norm, mul!
 
 # 4D physical field with the same 3D pattern in every velocity component.
 fill3(f) = repeat(f, 1, 1, 1, 3)
@@ -402,5 +404,114 @@ fill3(f) = repeat(f, 1, 1, 1, 3)
 
         # plotting stubs give a helpful error without a Makie backend
         @test_throws ErrorException plot_summary("nonexistent.jld2")
+    end
+
+    @testset "Enzyme VJP" begin
+        # All identities use the plain real inner product on the stored rfft
+        # coefficients (Enzyme's convention — no Hermitian shell weighting),
+        # with test directions built as rfft's of random real fields so they
+        # stay in the Hermitian-consistent subspace the solver lives in.
+        dotr(a, b) = real(dot(a, b))
+
+        N = 8
+        T = Float64
+        g = Grid(N; T)
+        randspec() = g.plan * randn(T, N, N, N, 3)
+
+        @testset "FFT plan rules (adjoint identity, exact)" begin
+            f!(y, p, x) = (mul!(y, p, x); nothing)
+
+            # forward r2c plan: x̄ = Pᵀȳ must satisfy ⟨ȳ, P v⟩ = ⟨x̄, v⟩
+            ȳ = randspec()
+            x̄ = zeros(T, N, N, N, 3)
+            autodiff(set_runtime_activity(Reverse), Const(f!), Const,
+                     Duplicated(similar(ȳ), copy(ȳ)), Const(g.plan),
+                     Duplicated(randn(T, N, N, N, 3), x̄))
+            for _ in 1:3
+                v = randn(T, N, N, N, 3)
+                @test dotr(ȳ, g.plan * v) ≈ dot(x̄, v) rtol = 1e-12
+            end
+
+            # inverse (ScaledPlan around c2r; c2r destroys its input, hence
+            # the copies)
+            w = randn(T, N, N, N, 3)
+            x̄c = zeros(Complex{T}, N ÷ 2 + 1, N, N, 3)
+            autodiff(set_runtime_activity(Reverse), Const(f!), Const,
+                     Duplicated(similar(w), copy(w)), Const(g.iplan),
+                     Duplicated(randspec(), x̄c))
+            for _ in 1:3
+                vc = randspec()
+                @test dot(w, g.iplan * copy(vc)) ≈ dotr(x̄c, vc) rtol = 1e-12
+            end
+        end
+
+        @testset "single-step VJP vs finite-difference JVP" begin
+            r = NavierStokes(g; ν = 0.02)
+            û0 = randspec()
+            dealias!(û0, g)
+            project!(û0, g)
+            s = RK4(û0)
+            ws = VJPWorkspace(r, s)
+            dt = T(1e-3)
+            t = zero(T)
+
+            stepnm(u) = (v = copy(u); step!(v, r, s, dt, t); v)
+
+            for _ in 1:3
+                v = randspec()
+                w = randspec()
+                ε = T(1e-5) * norm(û0) / norm(v)
+                Jv = (stepnm(û0 .+ ε .* v) .- stepnm(û0 .- ε .* v)) ./ (2ε)
+                ū = copy(w)
+                vjp_step!(ū, û0, r, s, dt, t, ws)
+                @test dotr(w, Jv) ≈ dotr(ū, v) rtol = 1e-6
+            end
+
+            # gradient of a scalar objective vs finite differences of the
+            # objective itself: J(û₀) = ½‖F(û₀)‖² (stored-coefficient norm),
+            # so the output cotangent seed is F(û₀) and the VJP result must
+            # match dJ/dε along any direction.
+            J(u) = (F = stepnm(u); real(dot(F, F)) / 2)
+            ḡ = stepnm(û0)                    # seed ū = ∂J/∂F = F(û₀)
+            vjp_step!(ḡ, û0, r, s, dt, t, ws)
+            for _ in 1:3
+                v = randspec()
+                ε = T(1e-5) * norm(û0) / norm(v)
+                dJ_fd = (J(û0 .+ ε .* v) - J(û0 .- ε .* v)) / (2ε)
+                @test dJ_fd ≈ dotr(ḡ, v) rtol = 1e-6
+            end
+
+            # purity: û and grid untouched, repeated calls deterministic
+            û_before = copy(û0)
+            kx_before = copy(g.kx)
+            k2_before = copy(g.k2)
+            w = randspec()
+            ū1 = copy(w)
+            vjp_step!(ū1, û0, r, s, dt, t, ws)
+            ū2 = copy(w)
+            vjp_step!(ū2, û0, r, s, dt, t, ws)
+            @test ū1 == ū2
+            @test û0 == û_before
+            @test g.kx == kx_before && g.k2 == k2_before
+        end
+
+        @testset "Float32 smoke (matches Float64 VJP)" begin
+            g64 = g
+            g32 = Grid(N)   # Float32 default
+            r64 = NavierStokes(g64; ν = 0.02)
+            r32 = NavierStokes(g32; ν = 0.02f0)
+            û64 = randspec()
+            dealias!(û64, g64)
+            project!(û64, g64)
+            û32 = ComplexF32.(û64)
+            s64 = RK4(û64); ws64 = VJPWorkspace(r64, RK4(û64))
+            s32 = RK4(û32); ws32 = VJPWorkspace(r32, RK4(û32))
+            w64 = randspec()
+            ū64 = copy(w64)
+            vjp_step!(ū64, û64, r64, s64, 1e-3, 0.0, ws64)
+            ū32 = ComplexF32.(w64)
+            vjp_step!(ū32, û32, r32, s32, 1f-3, 0f0, ws32)
+            @test isapprox(ComplexF64.(ū32), ū64; rtol = 2e-3)
+        end
     end
 end

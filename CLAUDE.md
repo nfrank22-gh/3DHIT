@@ -16,6 +16,12 @@ julia --project test/runtests.jl                    # run tests directly
 # driver scripts use the scripts/ environment (adds CairoMakie; devs the package):
 julia --project=scripts -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'  # once
 julia --project=scripts scripts/run_decaying.jl     # example driver (decaying HIT)
+
+# GPU functionality check (own env in scripts/gpu; backend arg: cpu|metal|cuda,
+# defaults to metal on macOS, cuda elsewhere — run on the CUDA machine for the
+# Enzyme VJP checks, which need Float64):
+julia --project=scripts/gpu -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'  # once
+julia --project=scripts/gpu scripts/gpu/test_gpu.jl
 ```
 
 There is no single-test filtering wired up; to iterate on one testset, run the relevant `@testset` block in a `julia --project` REPL after `using HIT3D, Test`.
@@ -29,6 +35,7 @@ One package, four submodules under `src/`, wired together in `src/HIT3D.jl`:
 - **`Integrators`** (`src/integrators/`) — hand-rolled fixed-step explicit RK (deliberately not OrdinaryDiffEq: AD-transparency, Metal control, light deps). Schemes own preallocated stage buffers, constructed from the state (`RK4(û)`). Driver: `evolve!(û, r, scheme, dt, nsteps; callbacks)`.
 - **`Diagnostics`** (`src/diagnostics.jl`) — analysis functions on `(û, grid)` (energy, spectra, Re_λ…), used both offline and inside callbacks. All reductions double-count kx > 0 via `hermitian_weights`.
 - **Plotting** (`ext/HIT3DMakieExt.jl`) — package extension, weakdep on `Makie` (frontend, backend-agnostic): loading CairoMakie/GLMakie activates `plot_summary(jld2)` / `plot_slices(jld2)`, whose stubs live in `src/plotting.jl`. The extension is entirely file-driven: `FieldWriter` files are self-describing (one-time `grid` group with `Nx…Lz` and `ν`). No Makie in the package deps or the test suite (rendering is verified manually by running the driver).
+- **AD** (`ext/HIT3DEnzymeExt.jl`) — package extension, weakdep on `Enzyme`: `vjp_step!(ū, û, r, s, dt, t, ws)` is the exact reverse-mode VJP of one `step!` w.r.t. the state (pre-step `û` untouched; `ū` maps output-cotangent → input-cotangent, plain unweighted real inner product on stored rfft coefficients — Enzyme's convention, no `hermitian_weights`). `VJPWorkspace(r, s)` (in `src/adjoint.jl`, no Enzyme needed) holds shadow RHS/scheme structs whose read-only fields alias the primal's (grid/plans/forcing; runtime activity treats aliased shadows as constants) plus zeroed scratch shadows, re-zeroed each call. The extension's `EnzymeRules` for `mul!(y, ::AbstractFFTs.Plan, x)` are deliberate contained type piracy, typed to `AbstractFFTs.Plan` so they fire on every backend (FFTW, CUFFT, …); reverse = one `adjoint(plan)` application, which also hides the input-destroying c2r from Enzyme — delete when official Enzyme rules land upstream. Validated in tests by FD-JVP/VJP dot-product identities (Float64, N=8).
 - **Run outputs** — drivers write everything into `results/<label(g)>_<label(r)>_<label(scheme)>/` (repo-rooted via `@__DIR__`), e.g. `results/N64_NavierStokes_nu0.001_NoForcing_RK4/`. `label(x)` (`src/labels.jl`) is the filesystem-safe slug layer; `Base.show` methods on the same structs are the pretty layer. `FieldWriter(overwrite = true)` is the default, so rerunning a driver replaces the folder contents instead of erroring on append.
 
 ### Core invariants (decided by design interview — don't casually reverse)

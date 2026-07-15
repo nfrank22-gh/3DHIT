@@ -4,46 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-HIT3D.jl — a modular pseudo-spectral solver for 3D homogeneous isotropic turbulence in Julia. Core solver, diagnostics, callbacks, and a Makie plotting extension are implemented; remaining TODOs are marked in code comments (stochastic forcing, IF/ETD schemes, low-storage RK).
+HIT3D — a pseudo-spectral solver for 3D homogeneous isotropic turbulence in Python/JAX. Ported from a Julia implementation (git history before the port, ending at `6753971`) specifically to make autodiff trivial: the entire hand-built Enzyme adjoint machinery of the Julia version collapses into `jax.vjp`/`jax.grad` over pure functions. Remaining TODOs are marked in code comments (stochastic forcing, IF/ETD schemes, low-storage RK, remat wiring for long rollouts).
 
 ## Commands
 
 ```bash
-julia --project -e 'using Pkg; Pkg.instantiate()'   # install deps
-julia --project -e 'using Pkg; Pkg.test()'          # run tests
-julia --project test/runtests.jl                    # run tests directly
+uv sync --extra plots        # install (CPU + matplotlib); plain `uv sync` for solver core only
+uv sync --extra cuda         # on the CUDA machine (dev happens on Mac = CPU; no Metal — JAX has no usable Metal backend)
+uv run pytest                # run tests
+uv run pytest tests/test_grid.py -k dealias   # one test
+uv run ruff check .          # lint
 
-# driver scripts use the scripts/ environment (adds CairoMakie; devs the package):
-julia --project=scripts -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'  # once
-julia --project=scripts scripts/run_decaying.jl     # example driver (decaying HIT)
-
-# GPU functionality check (own env in scripts/gpu; backend arg: cpu|metal|cuda,
-# defaults to metal on macOS, cuda elsewhere — run on the CUDA machine for the
-# Enzyme VJP checks, which need Float64):
-julia --project=scripts/gpu -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'  # once
-julia --project=scripts/gpu scripts/gpu/test_gpu.jl
+uv run scripts/run_decaying.py            # example driver (decaying HIT, ~3 min CPU)
+uv run scripts/run_linear_forcing.py      # forced HIT + Rosales–Meneveau validation printout
+uv run scripts/generate_dataset.py        # TOML-config dataset generation (needs configs/dataset.toml + configs/output_path.txt, both gitignored)
+uv run scripts/linear_forcing_validation.py  # postprocessor over generated datasets
+uv run scripts/check_gpu.py               # device report + jitted rollout + grad smoke
 ```
-
-There is no single-test filtering wired up; to iterate on one testset, run the relevant `@testset` block in a `julia --project` REPL after `using HIT3D, Test`.
 
 ## Architecture
 
-One package, four submodules under `src/`, wired together in `src/HIT3D.jl`:
+One package, `src/hit3d/`, all pure functions over plain arrays (no classes with mutable state anywhere):
 
-- **`Grids`** (`src/grid.jl`) — `Grid{T}`: geometry plus precomputed spectral operators (broadcast-shaped wavenumber arrays `kx/ky/kz`, `k²`, `1/k²` with k=0 zeroed, 2/3-rule dealias mask, batched rfft/irfft plans). Immutable-in-spirit and shareable; owns **no** scratch buffers. Derivatives/Laplacian/projection are small broadcast functions, not stored operators.
-- **`RHS`** (`src/rhs/`) — `AbstractRHS`; each governing equation is one concrete struct implementing `rhs!(dû, û, r, t)`. `NavierStokes` uses rotational form (u × ω in physical space, projected divergence-free in spectral space; pressure eliminated). RHS structs own their scratch buffers. Forcing is a pluggable slot: `AbstractForcing` implementations add to `dû` via `apply_forcing!`. Deliberately equation-level modularity, **not** a generic sum-of-terms design (terms must share FFTs and scratch). `linear_operator(r)` optionally exposes the diagonal stiff part (−νk²) for future integrating-factor/ETD schemes.
-- **`Integrators`** (`src/integrators/`) — hand-rolled fixed-step explicit RK (deliberately not OrdinaryDiffEq: AD-transparency, Metal control, light deps). Schemes own preallocated stage buffers, constructed from the state (`RK4(û)`). Driver: `evolve!(û, r, scheme, dt, nsteps; callbacks)`.
-- **`Diagnostics`** (`src/diagnostics.jl`) — analysis functions on `(û, grid)` (energy, spectra, Re_λ…), used both offline and inside callbacks. All reductions double-count kx > 0 via `hermitian_weights`.
-- **Plotting** (`ext/HIT3DMakieExt.jl`) — package extension, weakdep on `Makie` (frontend, backend-agnostic): loading CairoMakie/GLMakie activates `plot_summary(jld2)` / `plot_slices(jld2)`, whose stubs live in `src/plotting.jl`. The extension is entirely file-driven: `FieldWriter` files are self-describing (one-time `grid` group with `Nx…Lz` and `ν`). No Makie in the package deps or the test suite (rendering is verified manually by running the driver).
-- **AD** (`ext/HIT3DEnzymeExt.jl`) — package extension, weakdep on `Enzyme`: `vjp_step!(ū, û, r, s, dt, t, ws)` is the exact reverse-mode VJP of one `step!` w.r.t. the state (pre-step `û` untouched; `ū` maps output-cotangent → input-cotangent, plain unweighted real inner product on stored rfft coefficients — Enzyme's convention, no `hermitian_weights`). `VJPWorkspace(r, s)` (in `src/adjoint.jl`, no Enzyme needed) holds shadow RHS/scheme structs whose read-only fields alias the primal's (grid/plans/forcing; runtime activity treats aliased shadows as constants) plus zeroed scratch shadows, re-zeroed each call. The extension's `EnzymeRules` for `mul!(y, ::AbstractFFTs.Plan, x)` are deliberate contained type piracy, typed to `AbstractFFTs.Plan` so they fire on every backend (FFTW, CUFFT, …); reverse = one `adjoint(plan)` application, which also hides the input-destroying c2r from Enzyme — delete when official Enzyme rules land upstream. Validated in tests by FD-JVP/VJP dot-product identities (Float64, N=8).
-- **Run outputs** — drivers write everything into `results/<label(g)>_<label(r)>_<label(scheme)>/` (repo-rooted via `@__DIR__`), e.g. `results/N64_NavierStokes_nu0.001_NoForcing_RK4/`. `label(x)` (`src/labels.jl`) is the filesystem-safe slug layer; `Base.show` methods on the same structs are the pretty layer. `FieldWriter(overwrite = true)` is the default, so rerunning a driver replaces the folder contents instead of erroring on append.
+- **`grid.py`** — `Grid`: frozen pytree dataclass (arrays are leaves, sizes/lengths static metadata) holding precomputed wavenumbers (broadcast-shaped `kx/ky/kz`), `k2`, `inv_k2` (k=0 zeroed), 2/3-rule dealias mask (False at k=0 → zero-mean invariant), and Hermitian `weights`. Built once by `make_grid` (NumPy, never traced); never differentiated. Spectral ops (`ddx…`, `laplacian`, `project`, `dealias`, `to_physical`/`to_spectral`) are small functions — no FFT plans, XLA plans internally.
+- **`navierstokes.py`** — `make_ns_rhs(grid)` returns `rhs(u_hat, params, t)`; rotational form (u × ω in physical space, forcing added *before* dealias+projection so non-solenoidal parts are absorbed into pressure). `NSParams` (frozen pytree) carries ν + the forcing — the differentiable parameters. Equation-level modularity, **not** sum-of-terms.
+- **`forcing.py`** — forcings are frozen pytree dataclasses with `term(u_hat, grid, t)`, `injection(u_hat, grid)` (exact per-type injected power for the energy budget), and a `label` property. Their scalar coefficients are pytree leaves → reachable by `jax.grad` through `NSParams`.
+- **`integrators.py`** — the two-entry-point split that is the core design decision:
+  - `rollout(rhs, u_hat, params, dt, nsteps, t0)` — jitted `lax.scan` over `rk4_step`; **the only AD path**; structurally incapable of running callbacks.
+  - `evolve(rhs, u_hat, params, grid, dt, nsteps, callbacks=, progress=)` — host loop over jitted `rollout` segments split at callback firings; observation/dataset generation only; never differentiated.
+  - `rhs` and `nsteps` are static jit args: call `make_ns_rhs` once per grid or every closure recompiles.
+- **`callbacks.py`** — `Callback`/`Diagnostic`/`FieldWriter` + `State` named tuple `(u_hat, t, step, params, grid)`. User functions are pure observers `f(state) -> value`; scheduling (`every` / `every_time` + `warmup_time`) and all accumulation/IO live in the wrappers. Anything affecting dynamics belongs in the RHS params, never here.
+- **`diagnostics.py`** — analysis on `(u_hat, grid)` (energy, spectra, Re_λ, budget, autocorrelation…). All spectral reductions double-count kz > 0 via `grid.weights`; shell spectra are one `bincount` over shell indices. `energy_budget_cb` is the callback-form wrapper.
+- **`schema.py` / `report.py` / `plotting.py`** — one definition of the HDF5 layout (`grid/…`, `step_00000000/…`, `series/<name>/…`, state stored as `u_hat`); `report.load_run`/`read_series` are the matplotlib-free readers covered by tests; `plotting.plot_summary/plot_slices/plot_energy_balance/plot_validation` are file-driven postprocessors that lazy-import matplotlib (optional `[plots]` extra).
+- **`labels.py`** — `label(x)` / `run_label(grid, params)`: filesystem-safe slugs (`%g` numbers), e.g. `results/N64_NavierStokes_nu0.001_NoForcing_RK4`. Drivers write everything into `results/<run_label>/`; `FieldWriter(overwrite=True)` is the default so reruns replace the folder contents.
 
 ### Core invariants (decided by design interview — don't casually reverse)
 
-- **State layout**: a single complex 4D array `(Nx÷2+1, Ny, Nz, 3)` — rfft layout, velocity components last. Integrators treat it as one plain array; component access via `view(û, :,:,:, i)`. Shell sums must double-count kx > 0 modes (Hermitian symmetry).
-- **GPU portability**: broadcast-only array programming over `AbstractArray`. The backend is chosen solely by constructing `Grid` (and state) with the target array type (`Array`/`CuArray`/`MtlArray`); no CUDA/Metal code or dependencies in this package. Known risk: `plan_rfft` maturity on Metal.
-- **Precision**: everything parametric in `T`; Float32 is the default (Metal has no Float64).
-- **In-place everywhere** (`rhs!`, `mul!` with plans, preallocated buffers). AD target is Enzyme / adjoint equations — not Zygote — so mutation is fine, but keep scratch in structs (not globals/closures) and the step loop a plain function of plain arrays.
-- **Callbacks are pure observers**: user functions are `f(state) -> value` on a state named tuple `(; û, t, step, rhs, grid)`; scheduling and all accumulation/IO happen in the harness wrappers (`Callback`/`Diagnostic`/`FieldWriter`), wrapped in `@ignore_derivatives`. Anything that affects the dynamics (e.g. forcing) belongs in the RHS, never in a callback.
+- **State layout**: one complex array `(3, Nx, Ny, Nz//2+1)` — components FIRST, rfft-halved axis LAST (`rfftn` over axes 1–3; C-order native). Shell sums must double-count kz > 0 modes (Hermitian symmetry). This is transposed from the Julia layout — don't copy Julia-era conventions from old commits.
+- **AD wall**: `rollout` is the differentiable unit and carries no callbacks; `evolve` has callbacks and is never differentiated. Keep the wall — no flags mixing the two.
+- **Params vs. structure**: anything you might want a gradient of (ν, forcing coefficients) flows through the `NSParams` pytree; anything structural (grid, forcing *type*, equation form) is fixed at closure/construction time.
+- **GPU portability**: pure `jnp` array programming; backend is solely which jaxlib is installed (CPU on Mac, `[cuda]` extra on the Linux box). No device code in the package.
+- **Precision**: float32 default; float64 available on CPU via `jax.config.update("jax_enable_x64", True)` (the test suite does this in `conftest.py` — package default stays float32).
+- **Callbacks are pure observers** on `State`; IO/accumulation only in the harness wrappers.
+- **Tests don't re-prove JAX's autodiff**: `test_grad.py` is structure-smoke only (finite, nonzero grads through `rollout`). Physics is validated by property tests (Beltrami exact decay, Parseval, ν=0 energy conservation, budget residual), not oracle files.
 
-`scripts/run_decaying.jl` shows the intended end-to-end user API.
+`scripts/run_decaying.py` shows the intended end-to-end user API.
